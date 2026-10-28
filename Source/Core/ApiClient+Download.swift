@@ -181,6 +181,13 @@ public final class DownloadTask: NetworkCancellable, Hashable {
     }
   }
   
+  /// Called when the URLSession task ends with a transport error (timeout, connection lost).
+  internal func failureHandler(error: Error) {
+    state = .error
+    guard let response = response else { return }
+    response.queue.async { response.closure(Response(result: .failure(.generic(error)))) }
+  }
+  
   // MARK: - Public Methods
   
   public func cancel() {
@@ -389,6 +396,29 @@ extension ApiClient: URLSessionDownloadDelegate {
       })
     else { return }
     download.remoteFileSize = expectedTotalBytes
+  }
+  
+  public func urlSession(
+    _ session: URLSession,
+    task: URLSessionTask,
+    didCompleteWithError error: Error?
+  ) {
+    // Success is already handled in `didFinishDownloadingTo`
+    guard
+      let error,
+      let download = downloadsTasks.first(where: {
+        $0.task.taskIdentifier == task.taskIdentifier
+      }),
+      download.state != .paused
+    else { return }
+    downloadsTasks.remove(download)
+    
+    // A cancelled download only frees its slot: no callback, no new downloads
+    guard (error as? URLError)?.code != .cancelled else { return }
+    download.failureHandler(error: error)
+    
+    // Start pending downloads if any
+    startNextPendingDownload()
   }
 }
 
